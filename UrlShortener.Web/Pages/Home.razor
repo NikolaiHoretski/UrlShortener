@@ -1,0 +1,325 @@
+﻿@page "/"
+@implements IDisposable
+@inject UrlApiClient Api
+@inject IJSRuntime Js
+@inject NavigationManager Navigation
+
+<PageTitle>Сократитель ссылок</PageTitle>
+
+<div class="container py-4 px-3 px-md-4" style="max-width: 1200px;">
+    <h1 class="h3 mb-4">Сократитель ссылок</h1>
+
+    @if (!string.IsNullOrEmpty(_banner))
+    {
+        <div class="alert alert-danger" role="alert">@_banner</div>
+    }
+
+    <div class="card shadow-sm mb-4">
+        <div class="card-body">
+            <label class="form-label" for="new-url">Новая полная ссылка</label>
+            <div class="input-group">
+                <input id="new-url" class="form-control" @bind="_newLongUrl" @bind:event="oninput"
+                       placeholder="https://example.com/very/long/path" disabled="@_busy" />
+                <button type="button" class="btn btn-primary" @onclick="CreateAsync" disabled="@_busy">
+                    @if (_busy)
+                    {
+                        <span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
+                    }
+                    else
+                    {
+                        <span>Сократить</span>
+                    }
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <div class="d-flex flex-wrap gap-3 align-items-end mb-3">
+        <div>
+            <label class="form-label mb-0" for="sort-by">Сортировка</label>
+            <select id="sort-by" class="form-select" @bind="_sortBy" @bind:after="OnSortChangedAsync" disabled="@_busy">
+                <option value="createdAt">Дата создания</option>
+                <option value="redirectsCount">Переходы</option>
+                <option value="longUrl">Полный URL</option>
+                <option value="code">Сокращённый URL</option>
+            </select>
+        </div>
+        <div>
+            <label class="form-label mb-0" for="sort-order">Порядок</label>
+            <select id="sort-order" class="form-select" @bind="_sortOrder" @bind:after="OnSortChangedAsync" disabled="@_busy">
+                <option value="desc">По убыванию</option>
+                <option value="asc">По возрастанию</option>
+            </select>
+        </div>
+        <div>
+            <label class="form-label mb-0" for="page-size">На странице</label>
+            <select id="page-size" class="form-select" value="@_pageSize" @onchange="OnPageSizeChangeAsync" disabled="@_busy">
+                <option value="10">10</option>
+                <option value="20">20</option>
+                <option value="50">50</option>
+            </select>
+        </div>
+    </div>
+
+    @if (_data is null)
+    {
+        <p class="text-muted">Загрузка…</p>
+    }
+    else if (_data.Items.Count == 0)
+    {
+        <p class="text-muted">Пока нет записей — добавьте первую ссылку выше.</p>
+    }
+    else
+    {
+        <div class="table-responsive shadow-sm rounded">
+            <table class="table table-striped table-hover align-middle mb-0">
+                <thead class="table-light">
+                <tr>
+                    <th scope="col">Полный URL</th>
+                    <th scope="col">Сокращённый URL</th>
+                    <th scope="col">Дата создания</th>
+                    <th scope="col" class="text-end">Переходы</th>
+                    <th scope="col" class="text-end">Управление</th>
+                </tr>
+                </thead>
+                <tbody>
+                @foreach (var row in _data.Items)
+                {
+                    <tr>
+                        <td>
+                            @if (_editingId == row.Id)
+                            {
+                                <input class="form-control form-control-sm" @bind="_editLongUrl" @bind:event="oninput"
+                                       aria-label="Редактировать полный URL" />
+                            }
+                            else
+                            {
+                                <span class="text-break">@row.LongUrl</span>
+                            }
+                        </td>
+                        <td>
+                            <a href="@row.ShortUrl" target="_blank" rel="noopener noreferrer" class="text-break">@row.ShortUrl</a>
+                        </td>
+                        <td>@row.CreatedAt.LocalDateTime.ToString("g")</td>
+                        <td class="text-end">@row.RedirectsCount</td>
+                        <td class="text-end text-nowrap">
+                            @if (_editingId == row.Id)
+                            {
+                                <button type="button" class="btn btn-sm btn-success me-1" @onclick="() => SaveEditAsync(row.Id)"
+                                        disabled="@_busy">Сохранить</button>
+                                <button type="button" class="btn btn-sm btn-outline-secondary" @onclick="CancelEdit"
+                                        disabled="@_busy">Отмена</button>
+                            }
+                            else
+                            {
+                                <button type="button" class="btn btn-sm btn-outline-primary me-1" @onclick="() => StartEdit(row)"
+                                        disabled="@_busy">Редактировать</button>
+                                <button type="button" class="btn btn-sm btn-outline-danger" @onclick="() => DeleteAsync(row.Id)"
+                                        disabled="@_busy">Удалить</button>
+                            }
+                        </td>
+                    </tr>
+                }
+                </tbody>
+            </table>
+        </div>
+
+        <nav class="d-flex justify-content-between align-items-center mt-3" aria-label="Пагинация">
+            <button type="button" class="btn btn-outline-secondary btn-sm" @onclick="PrevPageAsync"
+                    disabled="@(_busy || _page <= 1)">Назад</button>
+            <span class="small text-muted">Страница @_page из @_totalPages · Всего @_data.TotalCount</span>
+            <button type="button" class="btn btn-outline-secondary btn-sm" @onclick="NextPageAsync"
+                    disabled="@(_busy || _page >= _totalPages)">Вперёд</button>
+        </nav>
+    }
+</div>
+
+@code {
+    private PagedUrlsResponseDto? _data;
+    private string _newLongUrl = string.Empty;
+    private string _sortBy = "createdAt";
+    private string _sortOrder = "desc";
+    private int _pageSize = 20;
+    private int _page = 1;
+    private Guid? _editingId;
+    private string _editLongUrl = string.Empty;
+    private string? _banner;
+    private bool _busy;
+
+    private int _totalPages => _data is null || _data.TotalCount == 0
+        ? 1
+        : Math.Max(1, (int)Math.Ceiling(_data.TotalCount / (double)_data.PageSize));
+
+    protected override async Task OnInitializedAsync() => await ReloadAsync();
+
+    private async Task ReloadAsync()
+    {
+        _banner = null;
+        _busy = true;
+        try
+        {
+            _data = await Api.ListAsync(_page, _pageSize, _sortBy, _sortOrder);
+            if (_data is null)
+            {
+                _banner =
+                    "Не удалось загрузить список. Проверьте, что API запущен, в wwwroot/appsettings.json верный ApiBaseUrl, и что CORS API разрешает origin этой страницы (http и https — разные origin).";
+                _data = new PagedUrlsResponseDto([], 0, _page, _pageSize);
+            }
+        }
+        catch (Exception ex)
+        {
+            _banner = $"Ошибка загрузки: {ex.Message}";
+            _data = new PagedUrlsResponseDto([], 0, _page, _pageSize);
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task CreateAsync()
+    {
+        _banner = null;
+        _busy = true;
+        try
+        {
+            var (created, error) = await Api.CreateAsync(_newLongUrl);
+            if (created is null)
+            {
+                _banner = error ?? "Не удалось создать ссылку.";
+                return;
+            }
+
+            _newLongUrl = string.Empty;
+            _page = 1;
+            await ReloadAsync();
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private void StartEdit(ShortenedUrlResponseDto row)
+    {
+        _editingId = row.Id;
+        _editLongUrl = row.LongUrl;
+        _banner = null;
+    }
+
+    private void CancelEdit()
+    {
+        _editingId = null;
+        _editLongUrl = string.Empty;
+    }
+
+    private async Task SaveEditAsync(Guid id)
+    {
+        _banner = null;
+        _busy = true;
+        try
+        {
+            var (_, error) = await Api.UpdateAsync(id, _editLongUrl);
+            if (error is not null)
+            {
+                _banner = error;
+                return;
+            }
+
+            CancelEdit();
+            await ReloadAsync();
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task DeleteAsync(Guid id)
+    {
+        if (!await Js.InvokeAsync<bool>("eval", "confirm('Удалить эту запись?')"))
+        {
+            return;
+        }
+
+        _banner = null;
+        _busy = true;
+        try
+        {
+            var (ok, error) = await Api.DeleteAsync(id);
+            if (!ok)
+            {
+                _banner = error ?? "Не удалось удалить.";
+                return;
+            }
+
+            if (_editingId == id)
+            {
+                CancelEdit();
+            }
+
+            await ReloadAsync();
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task PrevPageAsync()
+    {
+        if (_page <= 1)
+        {
+            return;
+        }
+
+        _page--;
+        await ReloadAsync();
+    }
+
+    private async Task NextPageAsync()
+    {
+        if (_page >= _totalPages)
+        {
+            return;
+        }
+
+        _page++;
+        await ReloadAsync();
+    }
+
+    private async Task OnPageSizeChangeAsync(ChangeEventArgs e)
+    {
+        if (int.TryParse(e.Value?.ToString(), out var size))
+        {
+            _pageSize = size;
+            _page = 1;
+            await ReloadAsync();
+        }
+    }
+
+    private async Task OnSortChangedAsync()
+    {
+        _page = 1;
+        await ReloadAsync();
+    }
+
+    protected override void OnInitialized()
+    {
+        Navigation.LocationChanged += OnLocationChanged;
+    }
+
+    private async void OnLocationChanged(object? sender, LocationChangedEventArgs e)
+    {
+        var uri = Navigation.ToAbsoluteUri(e.Location);
+        if (uri.PathAndQuery == "/")
+        {
+            await InvokeAsync(ReloadAsync);
+        }
+    }
+
+    public void Dispose()
+    {
+        Navigation.LocationChanged -= OnLocationChanged;
+    }
+}
